@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Neon Air Canvas</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #121212;
+            color: #ffffff;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+        }
+
+        #ui-container {
+            position: absolute;
+            top: 20px;
+            z-index: 10;
+            background: rgba(30, 30, 30, 0.75);
+            backdrop-filter: blur(10px);
+            padding: 15px 25px;
+            border-radius: 30px;
+            display: flex;
+            gap: 20px;
+            align-items: center;
+            box-shadow: 0 4px 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .control-group {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        label {
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #ccc;
+        }
+
+        input[type="color"] {
+            border: none;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            cursor: pointer;
+            background: none;
+        }
+
+        input[type="range"] {
+            accent-color: #00ffcc;
+            cursor: pointer;
+        }
+
+        #status-badge {
+            padding: 6px 14px;
+            border-radius: 15px;
+            font-weight: bold;
+            font-size: 0.85rem;
+            text-transform: uppercase;
+            transition: all 0.3s ease;
+        }
+
+        .status-draw { background: #00ffcc; color: #000; box-shadow: 0 0 10px #00ffcc; }
+        .status-erase { background: #ff0055; color: #fff; box-shadow: 0 0 10px #ff0055; }
+        .status-pause { background: #ffcc00; color: #000; box-shadow: 0 0 10px #ffcc00; }
+        .status-loading { background: #555; color: #fff; }
+
+        #canvas-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        /* Mirror the video and drawing canvas to make it intuitive */
+        video, #paintCanvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1);
+        }
+
+        #paintCanvas {
+            z-index: 2;
+            background: transparent;
+        }
+
+        video {
+            z-index: 1;
+            opacity: 0.15; /* Keeps the background dark for neon pop */
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <div class="control-group">
+            <label for="colorPicker">Color</label>
+            <input type="color" id="colorPicker" value="#00ffcc">
+        </div>
+        <div class="control-group">
+            <label for="brushThickness">Size</label>
+            <input type="range" id="brushThickness" min="5" max="40" value="15">
+        </div>
+        <div id="status-badge" class="status-loading">Loading AI...</div>
+    </div>
+
+    <div id="canvas-container">
+        <video id="webcam" autoplay playsinline></video>
+        <canvas id="paintCanvas"></canvas>
+    </div>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const canvasElement = document.getElementById('paintCanvas');
+        const ctx = canvasElement.getContext('2d');
+        const colorPicker = document.getElementById('colorPicker');
+        const brushThickness = document.getElementById('brushThickness');
+        const statusBadge = document.getElementById('status-badge');
+
+        let isDrawing = false;
+        let lastX = 0;
+        let lastY = 0;
+
+        // Resize canvas dynamically to match window sizing
+        function resizeCanvas() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+            // Clear or retain canvas data here if needed.
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // Helper: Calculate distance between two landmarks
+        function getDistance(pt1, pt2) {
+            return Math.hypot(pt1.x - pt2.x, pt1.y - pt2.y);
+        }
+
+        // Process MediaPipe results
+        function onResults(results) {
+            // Update loading status if hands are tracking
+            if (statusBadge.classList.contains('status-loading')) {
+                statusBadge.textContent = 'Ready';
+                statusBadge.className = 'status-pause';
+            }
+
+            if (!results.multiHandLandmarks || results.multiHandLandmarks.length === 0) {
+                return; 
+            }
+
+            const landmarks = results.multiHandLandmarks[0];
+            
+            // Extract core tracking points (normalized 0.0 to 1.0)
+            const wrist = landmarks[0];
+            const thumbTip = landmarks[4];
+            const indexTip = landmarks[8];
+            const indexPip = landmarks[6];
+            const middleTip = landmarks[12];
+            const ringTip = landmarks[16];
+            const pinkyTip = landmarks[20];
+
+            // Convert normalized index tip to actual pixel canvas coordinates
+            const currentX = indexTip.x * canvasElement.width;
+            const currentY = indexTip.y * canvasElement.height;
+
+            // --- GESTURE DETECTION LOGIC ---
+            
+            // 1. Check for Folded/Closed Fingers (Distance to wrist)
+            // If tips are close to the wrist, they are curled in.
+            const baseDist = getDistance(wrist, indexPip); // Reference scale
+            const isIndexExtended = getDistance(wrist, indexTip) > baseDist;
+            const isMiddleExtended = getDistance(wrist, middleTip) > baseDist;
+            const isRingExtended = getDistance(wrist, ringTip) > baseDist;
+            const isPinkyExtended = getDistance(wrist, pinkyTip) > baseDist;
+
+            let gesture = 'pause';
+
+            if (isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+                gesture = 'draw';
+            } else if (isIndexExtended && isMiddleExtended && isRingExtended && isPinkyExtended) {
+                gesture = 'erase';
+            } else if (!isIndexExtended && !isMiddleExtended && !isRingExtended && !isPinkyExtended) {
+                gesture = 'pause';
+            }
+
+            // --- EXECUTE ACTIONS BASED ON GESTURE ---
+            
+            if (gesture === 'draw') {
+                statusBadge.textContent = 'Drawing';
+                statusBadge.className = 'status-draw';
+
+                if (isDrawing) {
+                    ctx.beginPath();
+                    ctx.moveTo(lastX, lastY);
+                    ctx.lineTo(currentX, currentY);
+
+                    // Neon Glow Effect Settings
+                    const baseColor = colorPicker.value;
+                    ctx.strokeStyle = baseColor;
+                    ctx.lineWidth = brushThickness.value;
+                    ctx.shadowColor = baseColor;
+                    ctx.shadowBlur = parseInt(brushThickness.value) * 1.5;
+                    
+                    ctx.stroke();
+                }
+                
+                // Track historical coordinate for clean interpolation line drawing
+                lastX = currentX;
+                lastY = currentY;
+                isDrawing = true;
+
+            } else if (gesture === 'erase') {
+                statusBadge.textContent = 'Erasing';
+                statusBadge.className = 'status-erase';
+                
+                // Erase by clearing a local rect around index point position
+                const eraseRadius = parseInt(brushThickness.value) * 3; 
+                ctx.save();
+                // Reset shadow properties for clean cuts
+                ctx.shadowBlur = 0; 
+                ctx.clearRect(currentX - eraseRadius/2, currentY - eraseRadius/2, eraseRadius, eraseRadius);
+                ctx.restore();
+                
+                isDrawing = false;
+
+            } else {
+                statusBadge.textContent = 'Paused';
+                statusBadge.className = 'status-pause';
+                isDrawing = false;
+            }
+        }
+
+        // Initialize MediaPipe Hands pipeline
+        const hands = new Hands({
+            locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`
+        });
+
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+
+        hands.onResults(onResults);
+
+        // Initialize and lock-in native camera utils wrapper
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({ image: videoElement });
+            },
+            width: 1280,
+            height: 720
+        });
+        
+        camera.start().catch(err => {
+            statusBadge.textContent = 'Camera Error';
+            statusBadge.className = 'status-erase';
+            console.error(err);
+        });
+    </script>
+</body>
+</html>
