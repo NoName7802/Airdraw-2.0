@@ -2,14 +2,17 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
-<title>Advanced Air Drawing</title>
+<meta name="viewport"
+content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
+
+<title>Air Draw Pro</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
 
 <style>
+
 *{
   margin:0;
   padding:0;
@@ -21,29 +24,31 @@ html,body{
   width:100%;
   height:100%;
   overflow:hidden;
-  background:#000;
+  background:black;
 }
 
-#camera{
+#video{
   position:fixed;
   inset:0;
   width:100%;
   height:100%;
   object-fit:cover;
-  transform:scaleX(-1);
   z-index:1;
 }
 
-#drawCanvas{
+.frontCam{
+  transform:scaleX(-1);
+}
+
+#canvas{
   position:fixed;
   inset:0;
   width:100%;
   height:100%;
   z-index:2;
-  touch-action:none;
 }
 
-.topbar{
+.ui{
   position:fixed;
   top:10px;
   left:10px;
@@ -54,39 +59,40 @@ html,body{
   flex-wrap:wrap;
   gap:10px;
 
-  background:rgba(0,0,0,0.55);
-  border:1px solid rgba(255,255,255,0.1);
-
   padding:12px;
-  border-radius:18px;
 
-  backdrop-filter:blur(10px);
+  background:rgba(0,0,0,0.55);
+  border-radius:18px;
+  backdrop-filter:blur(12px);
+
+  border:1px solid rgba(255,255,255,0.08);
 }
 
 .control{
   display:flex;
   flex-direction:column;
   gap:5px;
+
   color:white;
   font-size:12px;
 }
 
-input[type="range"]{
-  width:120px;
-}
-
 button{
   border:none;
-  background:#111;
-  color:white;
   padding:10px 14px;
   border-radius:12px;
-  cursor:pointer;
+  background:#111;
+  color:white;
   font-weight:bold;
+  cursor:pointer;
 }
 
 button:hover{
   background:#222;
+}
+
+input[type="range"]{
+  width:120px;
 }
 
 .status{
@@ -101,26 +107,26 @@ button:hover{
   padding:12px 16px;
   border-radius:16px;
 
-  border:1px solid rgba(255,255,255,0.1);
-
   backdrop-filter:blur(10px);
+
+  border:1px solid rgba(255,255,255,0.08);
+
   line-height:1.5;
-  font-size:14px;
 }
 
-.badge{
-  font-weight:bold;
-  color:#00ffcc;
+.hideUI .ui,
+.hideUI .status{
+  display:none;
 }
 
 </style>
 </head>
 <body>
 
-<video id="camera" autoplay playsinline></video>
-<canvas id="drawCanvas"></canvas>
+<video id="video" autoplay playsinline class="frontCam"></video>
+<canvas id="canvas"></canvas>
 
-<div class="topbar">
+<div class="ui">
 
   <div class="control">
     <label>Brush Color</label>
@@ -129,87 +135,156 @@ button:hover{
 
   <div class="control">
     <label>Brush Size</label>
-    <input type="range" id="brushSize" min="2" max="50" value="10">
+    <input type="range" id="brushSize" min="2" max="60" value="10">
   </div>
 
   <div class="control">
     <label>Glow Effect</label>
-    <button id="glowToggle">Glow: ON</button>
+    <button id="glowBtn">Glow ON</button>
+  </div>
+
+  <div class="control">
+    <label>Camera</label>
+    <button id="cameraBtn">Switch Camera</button>
   </div>
 
   <div class="control">
     <label>Fullscreen</label>
-    <button id="fullscreenBtn">Enter Fullscreen</button>
+    <button id="fullscreenBtn">Fullscreen</button>
   </div>
 
   <div class="control">
-    <label>Clear</label>
-    <button id="clearBtn">Clear Canvas</button>
+    <label>Canvas</label>
+    <button id="clearBtn">Clear</button>
   </div>
 
 </div>
 
 <div class="status">
-  <div><span class="badge">✍️ Pinch Gesture</span> = Draw</div>
-  <div><span class="badge">🖐️ Open Palm</span> = Erase</div>
-  <div><span class="badge">✊ Fist</span> = Pause</div>
-  <div id="modeText" style="margin-top:8px;">MODE: WAITING</div>
+  ✍️ Pinch thumb + index = Draw<br>
+  🖐️ Open palm = Erase with palm
+  <div id="modeText" style="margin-top:8px;">
+    MODE: WAITING
+  </div>
 </div>
 
 <script>
 
-const video = document.getElementById("camera");
-const canvas = document.getElementById("drawCanvas");
+const video = document.getElementById("video");
+const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
 const modeText = document.getElementById("modeText");
 
 const colorPicker = document.getElementById("colorPicker");
-const brushSlider = document.getElementById("brushSize");
+const brushSizeSlider = document.getElementById("brushSize");
 
-const glowToggle = document.getElementById("glowToggle");
+const glowBtn = document.getElementById("glowBtn");
 const fullscreenBtn = document.getElementById("fullscreenBtn");
+const cameraBtn = document.getElementById("cameraBtn");
 const clearBtn = document.getElementById("clearBtn");
 
 let glowEnabled = true;
 
 let brushColor = colorPicker.value;
-let brushSize = parseInt(brushSlider.value);
+let brushSize = parseInt(brushSizeSlider.value);
 
-let prevX = null;
-let prevY = null;
+let previousX = null;
+let previousY = null;
+
+let facingMode = "user";
+
+let stream = null;
 
 function resizeCanvas(){
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 }
+
 resizeCanvas();
+
 window.addEventListener("resize", resizeCanvas);
 
-colorPicker.addEventListener("input", e=>{
+colorPicker.addEventListener("input",(e)=>{
   brushColor = e.target.value;
 });
 
-brushSlider.addEventListener("input", e=>{
+brushSizeSlider.addEventListener("input",(e)=>{
   brushSize = parseInt(e.target.value);
 });
 
-glowToggle.addEventListener("click", ()=>{
+glowBtn.addEventListener("click",()=>{
+
   glowEnabled = !glowEnabled;
-  glowToggle.innerText = glowEnabled ? "Glow: ON" : "Glow: OFF";
+
+  glowBtn.innerText = glowEnabled
+    ? "Glow ON"
+    : "Glow OFF";
 });
 
-fullscreenBtn.addEventListener("click", ()=>{
-  if(document.fullscreenElement){
-    document.exitFullscreen();
+clearBtn.addEventListener("click",()=>{
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+});
+
+fullscreenBtn.addEventListener("click", async ()=>{
+
+  if(!document.fullscreenElement){
+
+    await document.documentElement.requestFullscreen();
+
+    document.body.classList.add("hideUI");
+
   } else {
-    document.documentElement.requestFullscreen();
+
+    await document.exitFullscreen();
+
+    document.body.classList.remove("hideUI");
   }
 });
 
-clearBtn.addEventListener("click", ()=>{
-  ctx.clearRect(0,0,canvas.width,canvas.height);
+document.addEventListener("fullscreenchange",()=>{
+
+  if(!document.fullscreenElement){
+    document.body.classList.remove("hideUI");
+  }
 });
+
+cameraBtn.addEventListener("click", async ()=>{
+
+  facingMode =
+    facingMode === "user"
+    ? "environment"
+    : "user";
+
+  await startCamera();
+});
+
+async function startCamera(){
+
+  if(stream){
+
+    stream.getTracks().forEach(track=>{
+      track.stop();
+    });
+  }
+
+  stream = await navigator.mediaDevices.getUserMedia({
+    video:{
+      facingMode:facingMode,
+      width:{ideal:1280},
+      height:{ideal:720}
+    },
+    audio:false
+  });
+
+  video.srcObject = stream;
+
+  if(facingMode === "user"){
+    video.classList.add("frontCam");
+  } else {
+    video.classList.remove("frontCam");
+  }
+}
 
 function drawLine(x1,y1,x2,y2,color,size){
 
@@ -221,32 +296,41 @@ function drawLine(x1,y1,x2,y2,color,size){
   if(glowEnabled){
 
     for(let i=4;i>=1;i--){
+
       ctx.beginPath();
+
       ctx.strokeStyle = color;
+
       ctx.lineWidth = size + i*5;
+
       ctx.globalAlpha = 0.05*i;
+
       ctx.shadowBlur = 25;
       ctx.shadowColor = color;
+
       ctx.moveTo(x1,y1);
       ctx.lineTo(x2,y2);
+
       ctx.stroke();
     }
   }
 
   ctx.beginPath();
+
   ctx.strokeStyle = color;
+
   ctx.lineWidth = size;
+
   ctx.globalAlpha = 1;
 
   if(glowEnabled){
-    ctx.shadowBlur = 20;
+    ctx.shadowBlur = 18;
     ctx.shadowColor = color;
-  } else {
-    ctx.shadowBlur = 0;
   }
 
   ctx.moveTo(x1,y1);
   ctx.lineTo(x2,y2);
+
   ctx.stroke();
 
   ctx.restore();
@@ -259,7 +343,9 @@ function eraseAt(x,y,size){
   ctx.globalCompositeOperation = "destination-out";
 
   ctx.beginPath();
+
   ctx.arc(x,y,size,0,Math.PI*2);
+
   ctx.fill();
 
   ctx.restore();
@@ -296,33 +382,33 @@ function getGesture(landmarks){
 
   const upCount = fingers.filter(Boolean).length;
 
-  // PINCH detection (like holding pen)
-  const pinchDist = distance(thumbTip,indexTip);
+  const pinchDistance = distance(
+    thumbTip,
+    indexTip
+  );
 
-  // Open palm
+  // OPEN PALM = erase
   if(upCount >= 4){
     return "erase";
   }
 
-  // Closed fist
-  if(upCount === 0){
-    return "pause";
-  }
-
-  // Draw only when thumb and index are touching
-  if(pinchDist < 0.05){
+  // PINCH = draw
+  if(pinchDistance < 0.05){
     return "draw";
   }
 
-  return "pause";
+  return "idle";
 }
 
 function onResults(results){
 
-  if(!results.multiHandLandmarks || results.multiHandLandmarks.length===0){
+  if(
+    !results.multiHandLandmarks ||
+    results.multiHandLandmarks.length === 0
+  ){
 
-    prevX = null;
-    prevY = null;
+    previousX = null;
+    previousY = null;
 
     modeText.innerText = "MODE: NO HAND";
 
@@ -335,38 +421,55 @@ function onResults(results){
 
   const indexTip = landmarks[8];
 
-  const x = (1-indexTip.x)*canvas.width;
-  const y = indexTip.y*canvas.height;
+  // PALM CENTER
+  const palm = landmarks[9];
 
-  if(gesture==="draw"){
+  const drawX = (1-indexTip.x)*canvas.width;
+  const drawY = indexTip.y*canvas.height;
 
-    modeText.innerText = "MODE: DRAWING ✍️";
+  const palmX = (1-palm.x)*canvas.width;
+  const palmY = palm.y*canvas.height;
 
-    if(prevX!==null && prevY!==null){
-      drawLine(prevX,prevY,x,y,brushColor,brushSize);
+  if(gesture === "draw"){
+
+    modeText.innerText = "MODE: DRAWING";
+
+    if(previousX !== null){
+
+      drawLine(
+        previousX,
+        previousY,
+        drawX,
+        drawY,
+        brushColor,
+        brushSize
+      );
     }
 
-    prevX = x;
-    prevY = y;
-
+    previousX = drawX;
+    previousY = drawY;
   }
 
-  else if(gesture==="erase"){
+  else if(gesture === "erase"){
 
-    modeText.innerText = "MODE: ERASING 🖐️";
+    modeText.innerText = "MODE: ERASING";
 
-    eraseAt(x,y,brushSize*2);
+    eraseAt(
+      palmX,
+      palmY,
+      brushSize * 3
+    );
 
-    prevX = null;
-    prevY = null;
+    previousX = null;
+    previousY = null;
   }
 
   else {
 
-    modeText.innerText = "MODE: PAUSED ✊";
+    modeText.innerText = "MODE: IDLE";
 
-    prevX = null;
-    prevY = null;
+    previousX = null;
+    previousY = null;
   }
 }
 
@@ -385,15 +488,24 @@ hands.setOptions({
 
 hands.onResults(onResults);
 
-const camera = new Camera(video,{
-  onFrame: async ()=>{
-    await hands.send({image:video});
-  },
-  width:1280,
-  height:720
-});
+async function initialize(){
 
-camera.start();
+  await startCamera();
+
+  const mediaCamera = new Camera(video,{
+    onFrame: async ()=>{
+      await hands.send({
+        image:video
+      });
+    },
+    width:1280,
+    height:720
+  });
+
+  mediaCamera.start();
+}
+
+initialize();
 
 </script>
 
