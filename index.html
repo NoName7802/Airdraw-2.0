@@ -1,11 +1,11 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8" />
+<meta charset="UTF-8"/>
 <meta name="viewport"
 content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
 
-<title>Air Draw Pro</title>
+<title>Neon AirDraw AI</title>
 
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
@@ -36,7 +36,7 @@ html,body{
   z-index:1;
 }
 
-.frontCam{
+.front{
   transform:scaleX(-1);
 }
 
@@ -53,6 +53,7 @@ html,body{
   top:10px;
   left:10px;
   right:10px;
+
   z-index:10;
 
   display:flex;
@@ -62,7 +63,9 @@ html,body{
   padding:12px;
 
   background:rgba(0,0,0,0.55);
+
   border-radius:18px;
+
   backdrop-filter:blur(12px);
 
   border:1px solid rgba(255,255,255,0.08);
@@ -72,18 +75,21 @@ html,body{
   display:flex;
   flex-direction:column;
   gap:5px;
-
   color:white;
   font-size:12px;
 }
 
 button{
   border:none;
-  padding:10px 14px;
-  border-radius:12px;
   background:#111;
   color:white;
+
+  padding:10px 14px;
+
+  border-radius:12px;
+
   font-weight:bold;
+
   cursor:pointer;
 }
 
@@ -99,12 +105,15 @@ input[type="range"]{
   position:fixed;
   bottom:15px;
   left:15px;
+
   z-index:10;
 
   background:rgba(0,0,0,0.55);
+
   color:white;
 
   padding:12px 16px;
+
   border-radius:16px;
 
   backdrop-filter:blur(10px);
@@ -123,7 +132,7 @@ input[type="range"]{
 </head>
 <body>
 
-<video id="video" autoplay playsinline class="frontCam"></video>
+<video id="video" autoplay playsinline class="front"></video>
 <canvas id="canvas"></canvas>
 
 <div class="ui">
@@ -139,8 +148,13 @@ input[type="range"]{
   </div>
 
   <div class="control">
-    <label>Glow Effect</label>
+    <label>Glow</label>
     <button id="glowBtn">Glow ON</button>
+  </div>
+
+  <div class="control">
+    <label>Shape AI</label>
+    <button id="shapeBtn">Shape AI ON</button>
   </div>
 
   <div class="control">
@@ -161,8 +175,9 @@ input[type="range"]{
 </div>
 
 <div class="status">
-  ✍️ Pinch thumb + index = Draw<br>
-  🖐️ Open palm = Erase with palm
+  ✍️ Pinch = Draw<br>
+  🖐️ Palm = Erase<br>
+  🤖 AI Shape Assist Enabled
   <div id="modeText" style="margin-top:8px;">
     MODE: WAITING
   </div>
@@ -170,33 +185,94 @@ input[type="range"]{
 
 <script>
 
+//////////////////////////////
+// PWA SUPPORT
+//////////////////////////////
+
+const manifest = {
+  name:"Neon AirDraw AI",
+  short_name:"AirDraw",
+  start_url:".",
+  display:"standalone",
+  background_color:"#000000",
+  theme_color:"#000000",
+  icons:[]
+};
+
+const manifestBlob = new Blob(
+  [JSON.stringify(manifest)],
+  {type:'application/json'}
+);
+
+const manifestURL = URL.createObjectURL(manifestBlob);
+
+const link = document.createElement("link");
+link.rel = "manifest";
+link.href = manifestURL;
+
+document.head.appendChild(link);
+
+if('serviceWorker' in navigator){
+
+  const swCode = `
+  self.addEventListener('fetch',()=>{});
+  `;
+
+  const swBlob = new Blob(
+    [swCode],
+    {type:'text/javascript'}
+  );
+
+  navigator.serviceWorker.register(
+    URL.createObjectURL(swBlob)
+  );
+}
+
+//////////////////////////////
+// ELEMENTS
+//////////////////////////////
+
 const video = document.getElementById("video");
 const canvas = document.getElementById("canvas");
 const ctx = canvas.getContext("2d");
 
-const modeText = document.getElementById("modeText");
-
 const colorPicker = document.getElementById("colorPicker");
-const brushSizeSlider = document.getElementById("brushSize");
+const brushSlider = document.getElementById("brushSize");
 
 const glowBtn = document.getElementById("glowBtn");
-const fullscreenBtn = document.getElementById("fullscreenBtn");
+const shapeBtn = document.getElementById("shapeBtn");
 const cameraBtn = document.getElementById("cameraBtn");
+const fullscreenBtn = document.getElementById("fullscreenBtn");
 const clearBtn = document.getElementById("clearBtn");
 
+const modeText = document.getElementById("modeText");
+
+//////////////////////////////
+// SETTINGS
+//////////////////////////////
+
 let glowEnabled = true;
+let shapeAI = true;
 
 let brushColor = colorPicker.value;
-let brushSize = parseInt(brushSizeSlider.value);
-
-let previousX = null;
-let previousY = null;
+let brushSize = parseInt(brushSlider.value);
 
 let facingMode = "user";
 
-let stream = null;
+let prevX = null;
+let prevY = null;
+
+let smoothX = null;
+let smoothY = null;
+
+let currentStroke = [];
+
+//////////////////////////////
+// CANVAS
+//////////////////////////////
 
 function resizeCanvas(){
+
   canvas.width = window.innerWidth;
   canvas.height = window.innerHeight;
 }
@@ -205,11 +281,15 @@ resizeCanvas();
 
 window.addEventListener("resize", resizeCanvas);
 
+//////////////////////////////
+// UI EVENTS
+//////////////////////////////
+
 colorPicker.addEventListener("input",(e)=>{
   brushColor = e.target.value;
 });
 
-brushSizeSlider.addEventListener("input",(e)=>{
+brushSlider.addEventListener("input",(e)=>{
   brushSize = parseInt(e.target.value);
 });
 
@@ -217,9 +297,20 @@ glowBtn.addEventListener("click",()=>{
 
   glowEnabled = !glowEnabled;
 
-  glowBtn.innerText = glowEnabled
+  glowBtn.innerText =
+    glowEnabled
     ? "Glow ON"
     : "Glow OFF";
+});
+
+shapeBtn.addEventListener("click",()=>{
+
+  shapeAI = !shapeAI;
+
+  shapeBtn.innerText =
+    shapeAI
+    ? "Shape AI ON"
+    : "Shape AI OFF";
 });
 
 clearBtn.addEventListener("click",()=>{
@@ -242,13 +333,6 @@ fullscreenBtn.addEventListener("click", async ()=>{
   }
 });
 
-document.addEventListener("fullscreenchange",()=>{
-
-  if(!document.fullscreenElement){
-    document.body.classList.remove("hideUI");
-  }
-});
-
 cameraBtn.addEventListener("click", async ()=>{
 
   facingMode =
@@ -258,6 +342,12 @@ cameraBtn.addEventListener("click", async ()=>{
 
   await startCamera();
 });
+
+//////////////////////////////
+// CAMERA
+//////////////////////////////
+
+let stream = null;
 
 async function startCamera(){
 
@@ -273,25 +363,66 @@ async function startCamera(){
       facingMode:facingMode,
       width:{ideal:1280},
       height:{ideal:720}
-    },
-    audio:false
+    }
   });
 
   video.srcObject = stream;
 
   if(facingMode === "user"){
-    video.classList.add("frontCam");
+    video.classList.add("front");
   } else {
-    video.classList.remove("frontCam");
+    video.classList.remove("front");
   }
 }
 
-function drawLine(x1,y1,x2,y2,color,size){
+//////////////////////////////
+// DRAWING ENGINE
+//////////////////////////////
+
+function lerp(a,b,t){
+  return a+(b-a)*t;
+}
+
+function drawParticle(x,y,color,size){
+
+  ctx.save();
+
+  ctx.beginPath();
+
+  ctx.fillStyle = color;
+
+  ctx.globalAlpha = Math.random()*0.5;
+
+  ctx.shadowBlur = 20;
+
+  ctx.shadowColor = color;
+
+  ctx.arc(
+    x + (Math.random()-0.5)*10,
+    y + (Math.random()-0.5)*10,
+    Math.random()*size/2,
+    0,
+    Math.PI*2
+  );
+
+  ctx.fill();
+
+  ctx.restore();
+}
+
+function drawLine(x1,y1,x2,y2,color,size,speed){
 
   ctx.save();
 
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
+
+  // PRESSURE SIMULATION
+  const dynamicSize =
+    Math.max(
+      2,
+      size - speed*0.05
+    );
 
   if(glowEnabled){
 
@@ -301,11 +432,12 @@ function drawLine(x1,y1,x2,y2,color,size){
 
       ctx.strokeStyle = color;
 
-      ctx.lineWidth = size + i*5;
+      ctx.lineWidth = dynamicSize + i*5;
 
-      ctx.globalAlpha = 0.05*i;
+      ctx.globalAlpha = 0.04*i;
 
       ctx.shadowBlur = 25;
+
       ctx.shadowColor = color;
 
       ctx.moveTo(x1,y1);
@@ -319,11 +451,12 @@ function drawLine(x1,y1,x2,y2,color,size){
 
   ctx.strokeStyle = color;
 
-  ctx.lineWidth = size;
+  ctx.lineWidth = dynamicSize;
 
   ctx.globalAlpha = 1;
 
   if(glowEnabled){
+
     ctx.shadowBlur = 18;
     ctx.shadowColor = color;
   }
@@ -334,26 +467,150 @@ function drawLine(x1,y1,x2,y2,color,size){
   ctx.stroke();
 
   ctx.restore();
+
+  // PARTICLES
+
+  if(glowEnabled){
+
+    for(let i=0;i<3;i++){
+
+      drawParticle(
+        x2,
+        y2,
+        color,
+        dynamicSize
+      );
+    }
+  }
 }
 
 function eraseAt(x,y,size){
 
   ctx.save();
 
-  ctx.globalCompositeOperation = "destination-out";
+  ctx.globalCompositeOperation =
+    "destination-out";
 
   ctx.beginPath();
 
-  ctx.arc(x,y,size,0,Math.PI*2);
+  ctx.arc(
+    x,
+    y,
+    size,
+    0,
+    Math.PI*2
+  );
 
   ctx.fill();
 
   ctx.restore();
 }
 
+//////////////////////////////
+// SHAPE AI
+//////////////////////////////
+
 function distance(a,b){
-  return Math.hypot(a.x-b.x,a.y-b.y);
+
+  return Math.hypot(
+    a.x-b.x,
+    a.y-b.y
+  );
 }
+
+function recognizeShape(points){
+
+  if(points.length < 15){
+    return null;
+  }
+
+  const start = points[0];
+  const end = points[points.length-1];
+
+  const closeDist = distance(start,end);
+
+  // CIRCLE DETECTION
+
+  if(closeDist < 50){
+
+    let cx = 0;
+    let cy = 0;
+
+    points.forEach(p=>{
+      cx += p.x;
+      cy += p.y;
+    });
+
+    cx /= points.length;
+    cy /= points.length;
+
+    let avgRadius = 0;
+
+    points.forEach(p=>{
+      avgRadius += Math.hypot(
+        p.x-cx,
+        p.y-cy
+      );
+    });
+
+    avgRadius /= points.length;
+
+    return {
+      type:"circle",
+      x:cx,
+      y:cy,
+      r:avgRadius
+    };
+  }
+
+  // LINE DETECTION
+
+  return {
+    type:"line",
+    x1:start.x,
+    y1:start.y,
+    x2:end.x,
+    y2:end.y
+  };
+}
+
+function drawRecognizedShape(shape){
+
+  ctx.save();
+
+  ctx.strokeStyle = brushColor;
+  ctx.lineWidth = brushSize;
+
+  ctx.shadowBlur = glowEnabled ? 20 : 0;
+  ctx.shadowColor = brushColor;
+
+  ctx.beginPath();
+
+  if(shape.type === "circle"){
+
+    ctx.arc(
+      shape.x,
+      shape.y,
+      shape.r,
+      0,
+      Math.PI*2
+    );
+  }
+
+  if(shape.type === "line"){
+
+    ctx.moveTo(shape.x1,shape.y1);
+    ctx.lineTo(shape.x2,shape.y2);
+  }
+
+  ctx.stroke();
+
+  ctx.restore();
+}
+
+//////////////////////////////
+// GESTURES
+//////////////////////////////
 
 function isFingerUp(tip,pip){
   return tip.y < pip.y;
@@ -364,112 +621,176 @@ function getGesture(landmarks){
   const thumbTip = landmarks[4];
 
   const indexTip = landmarks[8];
+
   const middleTip = landmarks[12];
   const ringTip = landmarks[16];
   const pinkyTip = landmarks[20];
 
-  const indexPip = landmarks[6];
   const middlePip = landmarks[10];
   const ringPip = landmarks[14];
   const pinkyPip = landmarks[18];
 
-  const fingers = [
-    isFingerUp(indexTip,indexPip),
+  const fingersUp = [
     isFingerUp(middleTip,middlePip),
     isFingerUp(ringTip,ringPip),
     isFingerUp(pinkyTip,pinkyPip)
   ];
 
-  const upCount = fingers.filter(Boolean).length;
-
-  const pinchDistance = distance(
+  const pinchDist = distance(
     thumbTip,
     indexTip
   );
 
-  // OPEN PALM = erase
-  if(upCount >= 4){
+  // OPEN PALM
+
+  if(fingersUp.every(v=>v===true)){
+
     return "erase";
   }
 
-  // PINCH = draw
-  if(pinchDistance < 0.05){
+  // PINCH
+
+  if(pinchDist < 0.05){
+
     return "draw";
   }
 
   return "idle";
 }
 
+//////////////////////////////
+// MEDIAPIPE
+//////////////////////////////
+
 function onResults(results){
 
   if(
     !results.multiHandLandmarks ||
-    results.multiHandLandmarks.length === 0
+    results.multiHandLandmarks.length===0
   ){
 
-    previousX = null;
-    previousY = null;
+    if(shapeAI && currentStroke.length > 10){
+
+      const shape =
+        recognizeShape(currentStroke);
+
+      if(shape){
+
+        drawRecognizedShape(shape);
+      }
+    }
+
+    currentStroke = [];
+
+    prevX = null;
+    prevY = null;
 
     modeText.innerText = "MODE: NO HAND";
 
     return;
   }
 
-  const landmarks = results.multiHandLandmarks[0];
+  const landmarks =
+    results.multiHandLandmarks[0];
 
-  const gesture = getGesture(landmarks);
+  const gesture =
+    getGesture(landmarks);
 
-  const indexTip = landmarks[8];
+  const finger = landmarks[8];
 
-  // PALM CENTER
   const palm = landmarks[9];
 
-  const drawX = (1-indexTip.x)*canvas.width;
-  const drawY = indexTip.y*canvas.height;
+  let x =
+    (1-finger.x)*canvas.width;
 
-  const palmX = (1-palm.x)*canvas.width;
-  const palmY = palm.y*canvas.height;
+  let y =
+    finger.y*canvas.height;
+
+  let palmX =
+    (1-palm.x)*canvas.width;
+
+  let palmY =
+    palm.y*canvas.height;
+
+  // SMOOTHING
+
+  if(smoothX === null){
+
+    smoothX = x;
+    smoothY = y;
+  }
+
+  smoothX = lerp(smoothX,x,0.35);
+  smoothY = lerp(smoothY,y,0.35);
+
+  x = smoothX;
+  y = smoothY;
 
   if(gesture === "draw"){
 
-    modeText.innerText = "MODE: DRAWING";
+    modeText.innerText =
+      "MODE: DRAWING";
 
-    if(previousX !== null){
+    currentStroke.push({x,y});
+
+    if(prevX !== null){
+
+      const speed =
+        Math.hypot(
+          x-prevX,
+          y-prevY
+        );
 
       drawLine(
-        previousX,
-        previousY,
-        drawX,
-        drawY,
+        prevX,
+        prevY,
+        x,
+        y,
         brushColor,
-        brushSize
+        brushSize,
+        speed
       );
     }
 
-    previousX = drawX;
-    previousY = drawY;
+    prevX = x;
+    prevY = y;
   }
 
   else if(gesture === "erase"){
 
-    modeText.innerText = "MODE: ERASING";
+    modeText.innerText =
+      "MODE: ERASING";
 
     eraseAt(
       palmX,
       palmY,
-      brushSize * 3
+      brushSize*3
     );
 
-    previousX = null;
-    previousY = null;
+    prevX = null;
+    prevY = null;
   }
 
   else {
 
-    modeText.innerText = "MODE: IDLE";
+    modeText.innerText =
+      "MODE: IDLE";
 
-    previousX = null;
-    previousY = null;
+    if(shapeAI && currentStroke.length > 10){
+
+      const shape =
+        recognizeShape(currentStroke);
+
+      if(shape){
+
+        drawRecognizedShape(shape);
+      }
+    }
+
+    currentStroke = [];
+
+    prevX = null;
+    prevY = null;
   }
 }
 
@@ -488,11 +809,15 @@ hands.setOptions({
 
 hands.onResults(onResults);
 
-async function initialize(){
+//////////////////////////////
+// INIT
+//////////////////////////////
+
+async function init(){
 
   await startCamera();
 
-  const mediaCamera = new Camera(video,{
+  const cam = new Camera(video,{
     onFrame: async ()=>{
       await hands.send({
         image:video
@@ -502,10 +827,10 @@ async function initialize(){
     height:720
   });
 
-  mediaCamera.start();
+  cam.start();
 }
 
-initialize();
+init();
 
 </script>
 
